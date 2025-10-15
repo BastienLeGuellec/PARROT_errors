@@ -2,10 +2,14 @@ import argparse
 import os
 import pandas as pd
 from openai import OpenAI
+from llm_cache import cached_chat_completions_create
 import json
 import time
+from typing import Optional, Tuple
 
 # --- LLM Interaction ---
+
+CACHE_PATH = "cache/llm_cache.sqlite"
 
 
 def get_detector_prediction(client: OpenAI, text: str, model: str) -> str:
@@ -19,7 +23,10 @@ Text:
 {text}"""
 
     try:
-        response = client.chat.completions.create(
+        # Use cache-aware wrapper which returns a parsed JSON-like dict
+        resp = cached_chat_completions_create(
+            client,
+            CACHE_PATH,
             model=model,
             messages=[
                 {"role": "system", "content": "You are an expert medical proofreader."},
@@ -27,14 +34,16 @@ Text:
             ],
             response_format={"type": "json_object"},
         )
-        return response.choices[0].message.content.strip()
+
+        content = resp["choices"][0]["message"]["content"].strip()
+        return content
     except Exception as e:
         print(f"An error occurred with the detector API: {e}")
         time.sleep(5)
         return json.dumps({"error_detected": False, "explanation": "API_ERROR"})
 
 
-def get_judge_evaluation(client: OpenAI, detector_response: str, error_type: str, original_mistake: str = None, corrected_mistake: str = None, model: str = "gpt-5-mini") -> tuple[int, str]:
+def get_judge_evaluation(client: OpenAI, detector_response: str, error_type: str, original_mistake: Optional[str] = None, corrected_mistake: Optional[str] = None, model: str = "gpt-5-mini") -> Tuple[int, str]:
     """
     Asks the judge LLM to evaluate the detector's response.
     Returns a tuple (score, raw_response).
@@ -57,7 +66,9 @@ Your task is to evaluate if the model's response correctly identifies this speci
 Respond with only '1' for a correct evaluation or '0' for an incorrect one"""
 
     try:
-        response = client.chat.completions.create(
+        resp = cached_chat_completions_create(
+            client,
+            CACHE_PATH,
             model="gpt-5-mini",
             messages=[
                 {"role": "system",
@@ -65,7 +76,9 @@ Respond with only '1' for a correct evaluation or '0' for an incorrect one"""
                 {"role": "user", "content": prompt},
             ]
         )
-        raw_response = response.choices[0].message.content.strip()
+
+        raw_response = resp["choices"][0]["message"]["content"].strip()
+
         score = 1 if raw_response == '1' else 0
         return score, raw_response
     except Exception as e:
@@ -207,7 +220,7 @@ if __name__ == "__main__":
     load_dotenv()
     parser = argparse.ArgumentParser(
         description="Evaluate LLM performance on error detection.")
-    parser.add_argument("--input", type=str, default="merged_reports.jsonl",
+    parser.add_argument("--input", type=str, default="reports_with_errors.jsonl",
                         help="Path to input data file (.jsonl).")
     parser.add_argument("--output", type=str, default="evaluation_results.jsonl",
                         help="Path to base output results file (.jsonl).")
