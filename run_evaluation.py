@@ -5,7 +5,7 @@ from openai import OpenAI
 from llm_cache import cached_chat_completions_create
 import json
 import time
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 # --- LLM Interaction ---
 
@@ -98,7 +98,7 @@ def run_evaluation(input_path: str, api_key: str, output_path: str, model_name: 
 
     client = OpenAI(api_key=api_key)
 
-    processed_languages = []
+    processed_languages: list[Any] = []
     if os.path.exists(output_path):
         with open(output_path, 'r') as f:
             for line in f:
@@ -119,10 +119,10 @@ def run_evaluation(input_path: str, api_key: str, output_path: str, model_name: 
         "negation": {"error_type": "negation"},
     }
 
-    results_batch = []
+    results_batch: list[Any] = []
     case_counter = 0
 
-    for i, row in df.iterrows():
+    for _, row in df.iterrows():
         if row['language'] in processed_languages:
             continue
 
@@ -158,7 +158,7 @@ def run_evaluation(input_path: str, api_key: str, output_path: str, model_name: 
                         detector_response_json = json.loads(
                             detector_response_str)
                     except json.JSONDecodeError:
-                        detector_response_json = {
+                        detector_response_json: dict[str, Any] = {
                             "error_detected": False, "explanation": "Invalid JSON response"}
 
                     original_mistake = None
@@ -182,7 +182,7 @@ def run_evaluation(input_path: str, api_key: str, output_path: str, model_name: 
                     print(
                         f"    Judge score: {judge_score}, Judge response: {judge_response_raw}")
 
-                    result = {
+                    result: dict[str, Any] = {
                         "report_no": row["no"],
                         "language": row["language"] if "translation" not in col else "english",
                         "report_version": col,
