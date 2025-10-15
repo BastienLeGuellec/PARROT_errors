@@ -5,14 +5,18 @@ from openai import OpenAI
 from llm_cache import cached_chat_completions_create
 import json
 import time
-from typing import Any, Optional, Tuple
+from typing import Any
 
 # --- LLM Interaction ---
 
 CACHE_PATH = "cache/llm_cache.sqlite"
 
 
-def get_detector_prediction(client: OpenAI, text: str, model: str) -> str:
+def get_detector_prediction(
+        client: OpenAI,
+        text: str,
+        model: str
+) -> str:
     """
     Asks the detector LLM to find an error in the text.
     Returns a JSON string with 'error_detected' (boolean) and 'explanation'.
@@ -43,7 +47,14 @@ Text:
         return json.dumps({"error_detected": False, "explanation": "API_ERROR"})
 
 
-def get_judge_evaluation(client: OpenAI, detector_response: str, error_type: str, original_mistake: Optional[str] = None, corrected_mistake: Optional[str] = None, model: str = "gpt-5-mini") -> Tuple[int, str]:
+def get_judge_evaluation(
+        client: OpenAI,
+        detector_response: str,
+        error_type: str,
+        original_mistake: str | None = None,
+        corrected_mistake: str | None = None,
+        model: str = "gpt-5-mini"
+) -> tuple[int, str]:
     """
     Asks the judge LLM to evaluate the detector's response.
     Returns a tuple (score, raw_response).
@@ -69,7 +80,7 @@ Respond with only '1' for a correct evaluation or '0' for an incorrect one"""
         resp = cached_chat_completions_create(
             client,
             CACHE_PATH,
-            model="gpt-5-mini",
+            model=model,
             messages=[
                 {"role": "system",
                     "content": "You are an expert evaluator of language models."},
@@ -89,7 +100,12 @@ Respond with only '1' for a correct evaluation or '0' for an incorrect one"""
 # --- Main Evaluation Logic ---
 
 
-def run_evaluation(input_path: str, api_key: str, output_path: str, model_name: str):
+def run_evaluation(
+        input_path: str,
+        api_key: str,
+        output_path: str,
+        model_name: str
+):
     """
     Main function to load data, query LLMs, and save evaluation results.
     """
