@@ -7,6 +7,7 @@ import time
 
 # --- LLM Interaction ---
 
+
 def get_detector_prediction(client: OpenAI, text: str, model: str) -> str:
     """
     Asks the detector LLM to find an error in the text.
@@ -32,6 +33,7 @@ Text:
         time.sleep(5)
         return json.dumps({"error_detected": False, "explanation": "API_ERROR"})
 
+
 def get_judge_evaluation(client: OpenAI, detector_response: str, error_type: str, original_mistake: str = None, corrected_mistake: str = None, model: str = "gpt-5-mini") -> tuple[int, str]:
     """
     Asks the judge LLM to evaluate the detector's response.
@@ -54,12 +56,12 @@ Your task is to evaluate if the model's response correctly identifies this speci
 
 Respond with only '1' for a correct evaluation or '0' for an incorrect one"""
 
-
     try:
         response = client.chat.completions.create(
             model="gpt-5-mini",
             messages=[
-                {"role": "system", "content": "You are an expert evaluator of language models."},
+                {"role": "system",
+                    "content": "You are an expert evaluator of language models."},
                 {"role": "user", "content": prompt},
             ]
         )
@@ -72,6 +74,7 @@ Respond with only '1' for a correct evaluation or '0' for an incorrect one"""
         return 0, "API_ERROR"
 
 # --- Main Evaluation Logic ---
+
 
 def run_evaluation(input_path: str, api_key: str, output_path: str, model_name: str):
     """
@@ -91,10 +94,10 @@ def run_evaluation(input_path: str, api_key: str, output_path: str, model_name: 
                     if 'language' in record and record['language'] not in processed_languages:
                         processed_languages.append(record['language'])
                 except json.JSONDecodeError:
-                    continue # ignore corrupted lines
+                    continue  # ignore corrupted lines
         if processed_languages:
-            print(f"Languages already processed: {', '.join(processed_languages)}")
-
+            print(
+                f"Languages already processed: {', '.join(processed_languages)}")
 
     report_versions = {
         "proofread": {"error_type": "none"},
@@ -135,12 +138,15 @@ def run_evaluation(input_path: str, api_key: str, output_path: str, model_name: 
                 if pd.notna(text):
                     case_counter += 1
                     print(f"  Evaluating {col}...")
-                    detector_response_str = get_detector_prediction(client, text, model=model_name)
+                    detector_response_str = get_detector_prediction(
+                        client, text, model=model_name)
                     print(f"    Detector response: {detector_response_str}")
                     try:
-                        detector_response_json = json.loads(detector_response_str)
+                        detector_response_json = json.loads(
+                            detector_response_str)
                     except json.JSONDecodeError:
-                        detector_response_json = {"error_detected": False, "explanation": "Invalid JSON response"}
+                        detector_response_json = {
+                            "error_detected": False, "explanation": "Invalid JSON response"}
 
                     original_mistake = None
                     corrected_mistake = None
@@ -153,11 +159,15 @@ def run_evaluation(input_path: str, api_key: str, output_path: str, model_name: 
                                 original_mistake = row.get("original_mistake1")
                                 corrected_mistake = row.get("original_now1")
                         else:
-                            original_mistake = row.get(f"original_{version}_mistake")
-                            corrected_mistake = row.get(f"corrected_{version}_mistake")
+                            original_mistake = row.get(
+                                f"original_{version}_mistake")
+                            corrected_mistake = row.get(
+                                f"corrected_{version}_mistake")
 
-                    judge_score, judge_response_raw = get_judge_evaluation(client, detector_response_str, info['error_type'], original_mistake, corrected_mistake)
-                    print(f"    Judge score: {judge_score}, Judge response: {judge_response_raw}")
+                    judge_score, judge_response_raw = get_judge_evaluation(
+                        client, detector_response_str, info['error_type'], original_mistake, corrected_mistake)
+                    print(
+                        f"    Judge score: {judge_score}, Judge response: {judge_response_raw}")
 
                     result = {
                         "report_no": row["no"],
@@ -191,18 +201,27 @@ def run_evaluation(input_path: str, api_key: str, output_path: str, model_name: 
 
 # --- CLI ---
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate LLM performance on error detection.")
-    parser.add_argument("--input", type=str, default="merged_reports.jsonl", help="Path to input data file (.jsonl).")
-    parser.add_argument("--output", type=str, default="evaluation_results.jsonl", help="Path to base output results file (.jsonl).")
-    parser.add_argument("--api-key", type=str, help="OpenAI API key. Can also be set via OPENAI_API_KEY environment variable.")
-    parser.add_argument("--model", type=str, help="The detector model to be evaluated.")
+    from dotenv import load_dotenv
+    load_dotenv()
+    parser = argparse.ArgumentParser(
+        description="Evaluate LLM performance on error detection.")
+    parser.add_argument("--input", type=str, default="merged_reports.jsonl",
+                        help="Path to input data file (.jsonl).")
+    parser.add_argument("--output", type=str, default="evaluation_results.jsonl",
+                        help="Path to base output results file (.jsonl).")
+    parser.add_argument("--api-key", type=str,
+                        help="OpenAI API key. Can also be set via OPENAI_API_KEY environment variable.")
+    parser.add_argument("--model", type=str, default="gpt-5-mini",
+                        help="The detector model to be evaluated.")
 
     args = parser.parse_args()
     api_key = args.api_key or os.environ.get("OPENAI_API_KEY")
 
     if not api_key:
-        raise ValueError("OpenAI API key must be provided via --api-key argument or OPENAI_API_KEY environment variable.")
+        raise ValueError(
+            "OpenAI API key must be provided via --api-key argument or OPENAI_API_KEY environment variable.")
 
     # Construct the new output path with the model name suffix
     base_name, extension = os.path.splitext(args.output)
