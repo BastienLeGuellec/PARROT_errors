@@ -6,6 +6,9 @@ from llm_cache import cached_chat_completions_create
 import json
 import time
 from typing import Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
+from common import calculate_optimal_workers
 
 # --- LLM Interaction ---
 
@@ -100,6 +103,61 @@ Respond with only '1' for a correct evaluation or '0' for an incorrect one"""
 # --- Main Evaluation Logic ---
 
 
+def evaluate_single_case(
+    client: OpenAI,
+    model_name: str,
+    row: pd.Series,
+    version: str,
+    col: str,
+    text: str,
+    info: dict[str, str]
+) -> dict[str, Any]:
+    """
+    Evaluate a single text (report or translation) for errors.
+    Returns a result dictionary.
+    """
+    detector_response_str = get_detector_prediction(
+        client, text, model=model_name)
+
+    try:
+        detector_response_json = json.loads(detector_response_str)
+    except json.JSONDecodeError:
+        detector_response_json: dict[str, Any] = {
+            "error_detected": False, "explanation": "Invalid JSON response"}
+
+    original_mistake = None
+    corrected_mistake = None
+    if info['error_type'] != 'none':
+        if version == "dmeta1":
+            if "translation" in col:
+                original_mistake = row.get("english_mistake1")
+                corrected_mistake = row.get("english_now1")
+            else:
+                original_mistake = row.get("original_mistake1")
+                corrected_mistake = row.get("original_now1")
+        else:
+            original_mistake = row.get(f"original_{version}_mistake")
+            corrected_mistake = row.get(f"corrected_{version}_mistake")
+
+    judge_score, judge_response_raw = get_judge_evaluation(
+        client, detector_response_str, info['error_type'],
+        original_mistake, corrected_mistake)
+
+    result: dict[str, Any] = {
+        "report_no": row["no"],
+        "language": row["language"] if "translation" not in col else "english",
+        "report_version": col,
+        "error_type": info["error_type"],
+        "original_mistake": original_mistake,
+        "corrected_mistake": corrected_mistake,
+        "report_text": text,
+        "detector_response": detector_response_json,
+        "judge_score": judge_score,
+        "judge_response": judge_response_raw,
+    }
+    return result
+
+
 def run_evaluation(
         input_path: str,
         api_key: str,
@@ -114,19 +172,9 @@ def run_evaluation(
 
     client = OpenAI(api_key=api_key)
 
-    processed_languages: list[Any] = []
-    if os.path.exists(output_path):
-        with open(output_path, 'r') as f:
-            for line in f:
-                try:
-                    record = json.loads(line)
-                    if 'language' in record and record['language'] not in processed_languages:
-                        processed_languages.append(record['language'])
-                except json.JSONDecodeError:
-                    continue  # ignore corrupted lines
-        if processed_languages:
-            print(
-                f"Languages already processed: {', '.join(processed_languages)}")
+    # Note: We don't check for already-processed languages anymore.
+    # Since all API calls are cached, re-running is cheap and safe.
+    # We only write results at the very end to avoid partial completion bugs.
 
     report_versions = {
         "proofread": {"error_type": "none"},
@@ -135,17 +183,12 @@ def run_evaluation(
         "negation": {"error_type": "negation"},
     }
 
-    results_batch: list[Any] = []
-    case_counter = 0
-
+    # Collect all evaluation tasks
+    tasks: list[Any] = []
     for _, row in df.iterrows():
-        if row['language'] in processed_languages:
-            continue
-
         if row['language'] not in ["Italian", "French", "Greek", "German", "Polish"]:
             continue
 
-        print(f"Processing report # {row['no']}...")
         for version, info in report_versions.items():
             # Determine which columns to use based on the version
             if version == "proofread":
@@ -165,66 +208,64 @@ def run_evaluation(
 
             for col, text in texts_to_evaluate.items():
                 if pd.notna(text):
-                    case_counter += 1
-                    print(f"  Evaluating {col}...")
-                    detector_response_str = get_detector_prediction(
-                        client, text, model=model_name)
-                    print(f"    Detector response: {detector_response_str}")
-                    try:
-                        detector_response_json = json.loads(
-                            detector_response_str)
-                    except json.JSONDecodeError:
-                        detector_response_json: dict[str, Any] = {
-                            "error_detected": False, "explanation": "Invalid JSON response"}
+                    tasks.append({
+                        'row': row,
+                        'version': version,
+                        'col': col,
+                        'text': text,
+                        'info': info
+                    })
 
-                    original_mistake = None
-                    corrected_mistake = None
-                    if info['error_type'] != 'none':
-                        if version == "dmeta1":
-                            if "translation" in col:
-                                original_mistake = row.get("english_mistake1")
-                                corrected_mistake = row.get("english_now1")
-                            else:
-                                original_mistake = row.get("original_mistake1")
-                                corrected_mistake = row.get("original_now1")
-                        else:
-                            original_mistake = row.get(
-                                f"original_{version}_mistake")
-                            corrected_mistake = row.get(
-                                f"corrected_{version}_mistake")
+    print(f"Total evaluation tasks to process: {len(tasks)}")
 
-                    judge_score, judge_response_raw = get_judge_evaluation(
-                        client, detector_response_str, info['error_type'], original_mistake, corrected_mistake)
-                    print(
-                        f"    Judge score: {judge_score}, Judge response: {judge_response_raw}")
+    # Calculate optimal worker count for I/O-heavy tasks (API calls)
+    max_workers = calculate_optimal_workers(
+        task_type="io_heavy", cpu_multiplier=30.0)
+    print(f"Using {max_workers} parallel workers for API calls")
 
-                    result: dict[str, Any] = {
-                        "report_no": row["no"],
-                        "language": row["language"] if "translation" not in col else "english",
-                        "report_version": col,
-                        "error_type": info["error_type"],
-                        "original_mistake": original_mistake,
-                        "corrected_mistake": corrected_mistake,
-                        "report_text": text,
-                        "detector_response": detector_response_json,
-                        "judge_score": judge_score,
-                        "judge_response": judge_response_raw,
-                    }
-                    results_batch.append(result)
+    all_results: list[Any] = []
+    results_lock = Lock()
+    completed_count = 0
 
-                    if case_counter % 5 == 0:
-                        with open(output_path, 'a') as f:
-                            for res in results_batch:
-                                f.write(json.dumps(res) + '\n')
-                        results_batch = []
-                else:
-                    print(f"  Skipping {col} (not found in data).")
+    def process_task(task_data: dict[str, Any]) -> dict[str, Any] | None:
+        """Process a single evaluation task with error handling."""
+        try:
+            result = evaluate_single_case(
+                client=client,
+                model_name=model_name,
+                row=task_data['row'],
+                version=task_data['version'],
+                col=task_data['col'],
+                text=task_data['text'],
+                info=task_data['info']
+            )
+            print(
+                f"  ✓ Completed {task_data['col']} for report #{task_data['row']['no']}")
+            return result
+        except Exception as e:
+            print(
+                f"  ✗ Error processing {task_data['col']} for report #{task_data['row']['no']}: {e}")
+            return None
 
-    # Save any remaining results
-    if results_batch:
-        with open(output_path, 'a') as f:
-            for res in results_batch:
-                f.write(json.dumps(res) + '\n')
+    # Process tasks in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(process_task, task): task for task in tasks}
+
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                with results_lock:
+                    all_results.append(result)
+                    completed_count += 1
+                    if completed_count % 10 == 0:
+                        print(
+                            f"  → Progress: {completed_count}/{len(tasks)} tasks completed")
+
+    # Write all results at once at the end
+    print(f"\nWriting {len(all_results)} results to {output_path}...")
+    with open(output_path, 'w') as f:  # 'w' mode overwrites any partial results
+        for res in all_results:
+            f.write(json.dumps(res) + '\n')
 
     print(f"Evaluation complete. Results saved to {output_path}")
 
